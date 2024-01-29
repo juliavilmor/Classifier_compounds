@@ -238,23 +238,25 @@ if __name__ == '__main__':
     # compound_df['chembert2'] = compound_df['Molecule_SMILES'].apply(smiles_to_chemberta, model_version='v2')
     # compound_df.to_pickle('ESM2650M-ChemBERT2/compound_df.pkl')
     
-    print('\nEmbedding SMILES to SELFormer embedding...\n')
-    compound_df['selformer'] = compound_df['Molecule_SMILES'].apply(smiles_to_selformer)
-    exit()
+    # print('\nEmbedding SMILES to SELFormer embedding...\n')
+    # compound_df['selformer'] = compound_df['Molecule_SMILES'].apply(smiles_to_selformer)
+    
     
     # Embed proteins
-    print('\nEmbedding protein sequences to ESM...\n')
-    compound_df = pd.read_pickle('ESM2650M-MolFormer/compound_df.pkl')
-    new_compound_df = protseqs_to_esm(prots_df=compound_df, col_seq='Target_Seq', col_id='Target_ID', esm_model='3B')
-    print(new_compound_df)
-    new_compound_df.to_csv('ESM2650M-MolFormer/new_compound_df.csv')
-    new_compound_df.to_pickle('ESM2650M-MolFormer/new_compound_df.pkl')
-    exit()
+    # print('\nEmbedding protein sequences to ESM...\n')
+    # compound_df = pd.read_pickle('ESM2650M-MolFormer/compound_df.pkl')
+    # new_compound_df = protseqs_to_esm(prots_df=compound_df, col_seq='Target_Seq', col_id='Target_ID', esm_model='650M')
+    # print(new_compound_df)
+    # new_compound_df.to_csv('ESM2650M-MolFormer/new_compound_df.csv')
+    # new_compound_df.to_pickle('ESM2650M-MolFormer/new_compound_df.pkl')
+    
     
     # make coembedding protein-compounds
     print('\nCoembedding proteins and compounds...\n')
-    new_compound_df = pd.read_pickle('new_compound_df.pkl')
-    new_compound_df['coembed'] = new_compound_df.apply(lambda x: coembedding(x['esm'], x['fp']), axis = 1)
+    new_compound_df = pd.read_pickle('ESM2650M-MolFormer/new_compound_df.pkl')
+    print(new_compound_df)
+    exit()
+    new_compound_df['coembed'] = new_compound_df.apply(lambda x: coembedding(x['esm'], x['selformer']), axis = 1)
     print(new_compound_df)
     
     # store embeddings
