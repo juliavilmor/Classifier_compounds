@@ -231,9 +231,91 @@ def model_training_and_validation(ml_model, name, splits, verbose=True):
 
     return accuracy, sens, spec, auc, precision, f1
 
-#models = [{"label": "Model_RF", "model": model_RF}]
-#plot_roc_curves_for_models(models, static_test_x, static_test_y, save_png=True)
 
+def plot_ROC_curve_xfold(folds_models, folds_test_y, folds_test_x, auc_per_fold, savefig=True):
+    """
+    Plot the ROC curve for each fold and the mean curve.
+
+    Args:
+        folds_models (_type_): list of models for each fold
+        folds_test_y (_type_): list of test labels for each fold
+        folds_test_x (_type_): list of test embeddings for each fold
+        auc_per_fold (_type_): list of auc per fold
+        savefig (bool, optional): Save the plot to png. Defaults to True.
+
+    Returns:
+        mean_fpr and mean_tpr (np.array, np.array)
+    """
+        
+    fprs = []
+    tprs = []
+    mean_fpr = np.linspace(0, 1, 100)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    
+    for i, fold_model in enumerate(folds_models):
+        fpr, tpr, roc_thresh = roc_curve(folds_test_y[i], fold_model.predict_proba(folds_test_x[i])[:, 1], drop_intermediate=False)
+        #print(len(roc_thresh), len(fpr), len(tpr)) # if the length is different for each fold, we need to recalculate the plot metrics (below)
+        #print(len(np.unique(fold_model.predict_proba(train_x)[:, 1]))) # the length is this number + 1
+        display = RocCurveDisplay(fpr=fpr, 
+                                    tpr=tpr, 
+                                    roc_auc=auc_per_fold[i], 
+                                    estimator_name='RF Fold %s'%str(i+1),
+                                    )
+        display.plot(ax=ax, lw=0.9, alpha=0.7)
+        interp_tpr = np.interp(mean_fpr, fpr, tpr)
+        interp_tpr[0] = 0.0
+        tprs.append(interp_tpr)
+    mean_tpr = np.mean(tprs, axis=0)
+    mean_tpr[-1] = 1.0
+    ax.plot(mean_fpr, mean_tpr, color='b', lw=1.5, alpha=.9, label='Mean ROC (AUC = %0.2f $\pm$ %0.2f)' % (np.mean(auc_per_fold), np.std(auc_per_fold)))
+    std_tpr = np.std(tprs, axis=0)
+    tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
+    tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
+    ax.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2, label=r'$\pm$ 1 std. dev.')
+    ax.legend(loc="best")
+    if savefig:
+        plt.savefig('ROC_curve_xf.png')
+        
+    return mean_fpr, mean_tpr
+    
+def plot_PR_curve_xfold(folds_models, folds_test_y, folds_test_x, auc_per_fold, savefig=True):
+    """
+    Plot the Precision-Recall curve for each fold and the mean curve.
+
+    Args:
+        folds_models (list): list of models for each fold
+        folds_test_y (list): list of test labels for each fold
+        folds_test_x (list): list of test embeddings for each fold
+        auc_per_fold (list): list of auc per fold
+        savefig (bool, optional): Save the plot to png. Defaults to True.
+
+    Returns:
+        mean precision and mean recall (np.array, np.array)
+    """
+    fig, ax = plt.subplots(figsize=(6, 6))
+    for i, fold_model in enumerate(folds_models):
+        y_real = []
+        y_proba = []
+        precision, recall, pr_thresh = precision_recall_curve(folds_test_y[i], fold_model.predict_proba(folds_test_x[i])[:, 1])
+        average_precision = average_precision_score(folds_test_y[i], fold_model.predict_proba(folds_test_x[i])[:, 1])
+        display = PrecisionRecallDisplay(
+            precision=precision, 
+            recall=recall,  
+            estimator_name='RF Fold %s'%str(i+1))
+        display.plot(ax=ax, lw=1, alpha=0.7)
+        y_real.append(folds_test_y[i])
+        y_proba.append(fold_model.predict_proba(folds_test_x[i])[:, 1])
+        
+    y_real = np.concatenate(y_real)
+    y_proba = np.concatenate(y_proba)
+    mean_precision, mean_recall, _ = precision_recall_curve(y_real, y_proba)
+    ax.plot(mean_recall, mean_precision, color='b', lw=1.5, alpha=.9, label='Mean PR (AUC = %0.2f)'%(average_precision_score(y_real, y_proba)))
+    ax.legend(loc="best")
+    if savefig:
+        plt.savefig('PR_curve_xf.png')
+    
+    return mean_precision, mean_recall     
+    
 
 # CROSS-VALIDATION
 
@@ -268,18 +350,10 @@ def crossvalidation(ml_model, df, n_folds=5, verbose=False, plot_roc_xf=True, pl
     auc_per_fold = []
     precision_per_fold = []
     f1_per_fold = []
-    
-    # Results for plot of precision-recall curve and ROC curve
-    precisions = []
-    recalls = []
-    average_precisions = []
-    fprs = []
-    tprs = []
-    pr_thresholds = []
-    roc_thresholds = []    
+    test_x_per_fold = []
+    test_y_per_fold = []
+    folds_models = []   
 
-    mean_fpr = np.linspace(0, 1, 100)
-    fig, ax = plt.subplots(figsize=(6, 6))
     # Loop over the folds
     for train_index, test_index in kf.split(df):
         nfold = len(acc_per_fold) + 1
@@ -299,12 +373,15 @@ def crossvalidation(ml_model, df, n_folds=5, verbose=False, plot_roc_xf=True, pl
         
         # Fit the model
         fold_model.fit(train_x, train_y)
-
+        folds_models.append(fold_model)
+        
         # Testing
         # Convert the fingerprint and the label to a list
         test_x = df.iloc[test_index].coembed.tolist()
         test_y = df.iloc[test_index].Label.tolist()
-
+        test_x_per_fold.append(test_x)
+        test_y_per_fold.append(test_y)
+        
         # Performance for each fold
         accuracy, sens, spec, auc, precision, f1, conf_mat = model_performance(fold_model, test_x, test_y, verbose)
         
@@ -315,36 +392,6 @@ def crossvalidation(ml_model, df, n_folds=5, verbose=False, plot_roc_xf=True, pl
         auc_per_fold.append(auc)
         precision_per_fold.append(precision)
         f1_per_fold.append(f1)
-        
-        # Get precision and recall curve metrics
-        y_real = []
-        y_proba = []
-        precision, recall, pr_thresh = precision_recall_curve(test_y, fold_model.predict_proba(test_x)[:, 1])
-        average_precision = average_precision_score(test_y, fold_model.predict_proba(test_x)[:, 1])
-        if plot_pr_xf:
-            display = PrecisionRecallDisplay(
-                precision=precision, 
-                recall=recall,  
-                estimator_name='XGB Fold %s'%nfold)
-            display.plot(ax=ax, lw=1, alpha=0.7)
-            y_real.append(test_y)
-            y_proba.append(fold_model.predict_proba(test_x)[:, 1])        
-        
-        # Get ROC curve metrics
-        fpr, tpr, roc_thresh = roc_curve(test_y, fold_model.predict_proba(test_x)[:, 1], drop_intermediate=False)
-        #print(len(roc_thresh), len(fpr), len(tpr)) # if the length is different for each fold, we need to recalculate the plot metrics (below)
-        #print(len(np.unique(fold_model.predict_proba(train_x)[:, 1]))) # the length is this number + 1
-        if plot_roc_xf:
-            display = RocCurveDisplay(fpr=fpr, 
-                                        tpr=tpr, 
-                                        roc_auc=auc, 
-                                        estimator_name='XGB Fold %s'%nfold,
-                                        )
-            display.plot(ax=ax, lw=0.9, alpha=0.7)
-            interp_tpr = np.interp(mean_fpr, fpr, tpr)
-            interp_tpr[0] = 0.0
-            tprs.append(interp_tpr)
-        
         
     # Print statistics of results
     print(
@@ -371,60 +418,17 @@ def crossvalidation(ml_model, df, n_folds=5, verbose=False, plot_roc_xf=True, pl
                         np.mean(f1_per_fold), np.std(f1_per_fold),
                         time.time() - t0]
     
+    # Get ROC and PR curve metrics
+    mean_fpr, mean_tpr = plot_ROC_curve_xfold(folds_models, 
+                        folds_test_y=test_y_per_fold, folds_test_x=test_x_per_fold, 
+                        auc_per_fold=auc_per_fold, savefig=False)
     
-    # # Recalculate the plot metrics to have the same threshold values for each fold
-    # unique_pr_thresholds = set(pr_thresholds[0]).intersection(*pr_thresholds[1:])
-    # unique_roc_thresholds = set(roc_thresholds[0]).intersection(*roc_thresholds[1:])
-    # #print(len(unique_pr_thresholds), len(unique_roc_thresholds)) # new length of the thresholds
-    
-    # new_fprs = []
-    # new_tprs = []
-    # for i in range(len(fprs)): # for each fold
-    #     roc_fprs = []
-    #     roc_tprs = []
-    #     for j, th in enumerate(unique_roc_thresholds): # get the value in the same position of the threshold
-    #         roc_fprs.append(fprs[i][j])
-    #         roc_tprs.append(tprs[i][j])
-    #     roc_fprs = np.array(roc_fprs)
-    #     roc_tprs = np.array(roc_tprs)
-    #     new_fprs.append(roc_fprs)
-    #     new_tprs.append(roc_tprs)
-
-    # new_precisions = []
-    # new_recalls = []
-    # for i in range(len(precisions)): # for each fold
-    #     pr_precisions = []
-    #     pr_recalls = []
-    #     for j, th in enumerate(unique_pr_thresholds): # get the value in the same position of the threshold
-    #         pr_precisions.append(precisions[i][j])
-    #         pr_recalls.append(recalls[i][j])
-    #     pr_precisions = np.array(pr_precisions)
-    #     pr_recalls = np.array(pr_recalls)
-    #     new_precisions.append(pr_precisions)
-    #     new_recalls.append(pr_recalls)
-    
-    # Calculate the mean and std of the plot metrics
-    if plot_pr_xf:
-        y_real = np.concatenate(y_real)
-        y_proba = np.concatenate(y_proba)
-        mean_precision, mean_recall, _ = precision_recall_curve(y_real, y_proba)
-        ax.plot(mean_recall, mean_precision, color='b', lw=1.5, alpha=.9, label='Mean PR (AUC = %0.2f)'%(average_precision_score(y_real, y_proba)))
-        ax.legend(loc="best")
-        plt.savefig('PR_curve_xf.png')
-
-    if plot_roc_xf:
-        mean_tpr = np.mean(tprs, axis=0)
-        mean_tpr[-1] = 1.0
-        ax.plot(mean_fpr, mean_tpr, color='b', lw=1.5, alpha=.9, label='Mean ROC (AUC = %0.2f $\pm$ %0.2f)' % (np.mean(auc_per_fold), np.std(auc_per_fold)))
-        std_tpr = np.std(tprs, axis=0)
-        tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
-        tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
-        ax.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2, label=r'$\pm$ 1 std. dev.')
-        ax.legend(loc="best")
-        plt.savefig('ROC_curve_xf.png')
+    mean_precision, mean_recall = plot_PR_curve_xfold(folds_models, 
+                        folds_test_y=test_y_per_fold, folds_test_x=test_x_per_fold, 
+                        auc_per_fold=auc_per_fold, savefig=False)
         
-    #plot_metrics = [mean_recall, mean_precision, mean_fpr, mean_tpr]
-    plot_metrics = []
+    plot_metrics = [mean_recall, mean_precision, mean_fpr, mean_tpr]
+
     return statistics_list, plot_metrics
     
 # EXECUTION OF THE MODEL
@@ -441,7 +445,7 @@ if __name__ == '__main__':
     # Try different percentages of under-sampling
     # and run the model to get performances
     
-    percentages = [0.4]
+    percentages = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
     X = df['coembed'].tolist()
     Y = df['Label'].tolist()
     
@@ -449,7 +453,7 @@ if __name__ == '__main__':
     plots_metrics = dict()
     
     for i, perc in enumerate(percentages):
-        print('-------------')
+        print('-----------------')
         print('Undersampling percentage: ', perc)
         X_res, Y_res = undersampling(Y, X, percentage=perc)
         df_res = pd.DataFrame({'coembed': X_res, 'Label': Y_res})
@@ -463,7 +467,7 @@ if __name__ == '__main__':
         param = {
         "n_estimators": 100,  # number of trees to grows
         "criterion": "entropy",  # cost function to be optimized for a split
-        "class_weight": "balanced", # the classes will be weighted inversely proportional to how frequently they appear in the data
+        #"class_weight": "balanced", # the classes will be weighted inversely proportional to how frequently they appear in the data
         "n_jobs": 15 # number of cores to distribute the process
         }
         model_RF = RandomForestClassifier(**param)
@@ -475,7 +479,7 @@ if __name__ == '__main__':
         statistics_list, plot_metrics = crossvalidation(model_RF, df_res, n_folds=N_FOLDS, verbose=False, plot_roc_xf=False, plot_pr_xf=True)
         statistics[perc] = statistics_list
         plots_metrics[perc] = plot_metrics
-    exit()
+
     # Get df of all model statistics
     df_statistics = pd.DataFrame.from_dict(statistics)
     index_names =['acc_mean', 'acc_std', 'sens_mean', 'sens_std', 
@@ -499,10 +503,10 @@ if __name__ == '__main__':
     
     for i, color in zip(range(len(percentages)), colors):
         display = PrecisionRecallDisplay(
-            precision=plots_metrics[percentages[i]][0], 
-            recall=plots_metrics[percentages[i]][1],  
-            estimator_name='XGB_%s'%percentages[i])
-        display.plot(ax=ax, color=color, label='XGB_%s'%percentages[i])
+            precision=plots_metrics[percentages[i]][1], 
+            recall=plots_metrics[percentages[i]][0],  
+            estimator_name='RF_%s'%percentages[i])
+        display.plot(ax=ax, color=color, label='RF_%s'%percentages[i])
     
     handles, labels = display.ax_.get_legend_handles_labels()
     #handles.extend([l])
@@ -511,7 +515,7 @@ if __name__ == '__main__':
     ax.set_ylim([0.0, 1.05])
     ax.legend(handles, labels, loc="best")
     ax.set_title('Precision-Recall curve')        
-    plt.savefig('PR_curve_XGB.png')
+    plt.savefig('PR_curve_RF.png')
     
     # Plot ROC curve
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -521,11 +525,11 @@ if __name__ == '__main__':
             fpr=plots_metrics[percentages[i]][2], 
             tpr=plots_metrics[percentages[i]][3], 
             roc_auc=auc(plots_metrics[percentages[i]][0], plots_metrics[percentages[i]][1]), 
-            estimator_name='XGB_%s'%percentages[i])
-        display.plot(ax=ax, color=color, label='XGB_%s'%percentages[i])
+            estimator_name='RF_%s'%percentages[i])
+        display.plot(ax=ax, color=color, label='RF_%s'%percentages[i])
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
     ax.legend(loc="best")
     ax.set_title('ROC curve')
-    plt.savefig('ROC_curve_XGB.png')
+    plt.savefig('ROC_curve_RF.png')
         
