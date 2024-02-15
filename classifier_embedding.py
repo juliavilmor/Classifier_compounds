@@ -10,6 +10,9 @@ import os
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from transformers import RobertaTokenizer, RobertaModel, RobertaConfig
 import selfies as sf
+import dask.dataframe as dd # to parallelize the embedding
+from pandas_parallel_apply import DataFrameParallel, SeriesParallel
+
 
 # LOAD DATASET
 print('DATASET:')
@@ -92,11 +95,11 @@ def smiles_to_chemberta(smiles, model_version='v2'):
     else:
         raise ValueError('Model version must be either v1 or v2')
     
-    model = AutoModelForCausalLM.from_pretrained(model_name, is_decoder=True).to('cuda:0')
+    model = AutoModelForCausalLM.from_pretrained(model_name, is_decoder=True).to('cuda:1')
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     # Embed the smiles
-    input_token = tokenizer(smiles, return_tensors='pt').to('cuda:0')
+    input_token = tokenizer(smiles, return_tensors='pt').to('cuda:1')
     output = model(**input_token, output_hidden_states=True)
     embedding = output.hidden_states[0]
     embedding = embedding.cpu().detach().numpy()
@@ -224,41 +227,47 @@ if __name__ == '__main__':
     
     compound_df = df.copy()
     
-    # Embed molecules
+    # 1. Embed molecules
     #print('\nEmbedding SMILES to fingerprints...\n')
     #compound_df['fp'] = compound_df['Molecule_SMILES'].apply(smiles_to_fp)
     
     # print('\nEmbedding SMILES to MolFormer-XL embedding...\n')
-    
-    # print('\nEmbedding SMILES to ChemBERTa embedding v1...\n')
-    # compound_df['chemberta'] = compound_df['Molecule_SMILES'].apply(smiles_to_chemberta, model_version='v1')
-    # compound_df.to_pickle('ESM2650M-ChemBerta/compound_df.pkl')
+
+    print('\nEmbedding SMILES to ChemBERTa embedding v1...\n')
+    ddf = dd.from_pandas(compound_df, npartitions=8) # number of cores to parallelize
+    ddf['chemberta'] = ddf['Molecule_SMILES'].apply(smiles_to_chemberta, model_version='v1')
+    compound_df = ddf.compute()
+    print(compound_df)
+    compound_df.to_pickle('ESM2650M-ChemBerta/compound_df.pkl')
+    exit()
     
     # print('\nEmbedding SMILES to ChemBERTa embedding v2...\n')
-    # compound_df['chembert2'] = compound_df['Molecule_SMILES'].apply(smiles_to_chemberta, model_version='v2')
+    # ddf = dd.from_pandas(compound_df, npartitions=5) # number of cores to parallelize
+    # ddf['chembert2'] = ddf['Molecule_SMILES'].apply(smiles_to_chemberta, model_version='v2')
+    # compound_df = ddf.compute()
+    # print(compound_df)
     # compound_df.to_pickle('ESM2650M-ChemBERT2/compound_df.pkl')
-    
+
     # print('\nEmbedding SMILES to SELFormer embedding...\n')
     # compound_df['selformer'] = compound_df['Molecule_SMILES'].apply(smiles_to_selformer)
+    # compound_df.to_pickle('ESM2650M-SELFormer/compound_df.pkl')
     
-    
-    # Embed proteins
-    # print('\nEmbedding protein sequences to ESM...\n')
-    # compound_df = pd.read_pickle('ESM2650M-MolFormer/compound_df.pkl')
-    # new_compound_df = protseqs_to_esm(prots_df=compound_df, col_seq='Target_Seq', col_id='Target_ID', esm_model='650M')
-    # print(new_compound_df)
-    # new_compound_df.to_csv('ESM2650M-MolFormer/new_compound_df.csv')
-    # new_compound_df.to_pickle('ESM2650M-MolFormer/new_compound_df.pkl')
-    
-    
-    # make coembedding protein-compounds
-    print('\nCoembedding proteins and compounds...\n')
-    new_compound_df = pd.read_pickle('ESM2650M-MolFormer/new_compound_df.pkl')
+    # 2. Embed proteins
+    print('\nEmbedding protein sequences to ESM...\n')
+    compound_df = pd.read_pickle('ESM2650M-ChemBERT2/compound_df.pkl')
+    print(compound_df)
+    new_compound_df = protseqs_to_esm(prots_df=compound_df, col_seq='Target_Seq', col_id='Target_ID', esm_model='650M')
     print(new_compound_df)
-    exit()
-    new_compound_df['coembed'] = new_compound_df.apply(lambda x: coembedding(x['esm'], x['selformer']), axis = 1)
+    new_compound_df.to_csv('ESM2650M-ChemBERT2/new_compound_df.csv')
+    new_compound_df.to_pickle('ESM2650M-ChemBERT2/new_compound_df.pkl')
+
+    
+    # 3. Make coembedding protein-compounds
+    print('\nCoembedding proteins and compounds...\n')
+    new_compound_df = pd.read_pickle('ESM2650M-ChemBERT2/new_compound_df.pkl')
+    new_compound_df['coembed'] = new_compound_df.apply(lambda x: coembedding(x['esm'], x['chembert2']), axis = 1)
     print(new_compound_df)
     
     # store embeddings
-    new_compound_df.to_csv('data_embed.csv')
-    new_compound_df.to_pickle('data_embed.pkl')
+    new_compound_df.to_csv('ESM2650M-ChemBERT2/data_embed.csv')
+    new_compound_df.to_pickle('ESM2650M-ChemBERT2/data_embed.pkl')
